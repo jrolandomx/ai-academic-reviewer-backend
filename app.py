@@ -22,7 +22,11 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://ai-chat-frontend-h92larnka-jrolandomxs-projects.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,7 +36,9 @@ app.add_middleware(
 # OPENAI
 # =========================
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 llm = ChatOpenAI(
     model="gpt-4.1-mini",
@@ -242,37 +248,45 @@ def upload_pdf(file: UploadFile = File(...)):
 
     global vectorstore
 
-    file_path = f"uploaded_{file.filename}"
+    try:
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        file_path = f"uploaded_{file.filename}"
 
-    loader = PyPDFLoader(file_path)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    documents = loader.load()
+        loader = PyPDFLoader(file_path)
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
-    )
+        documents = loader.load()
 
-    chunks = text_splitter.split_documents(documents)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200
+        )
 
-    embeddings = OpenAIEmbeddings(
-        api_key=os.getenv("OPENAI_API_KEY")
-    )
+        chunks = text_splitter.split_documents(documents)
 
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings
-    )
+        embeddings = OpenAIEmbeddings(
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
 
-    return {
-        "message": "PDF cargado correctamente",
-        "filename": file.filename,
-        "pages": len(documents),
-        "chunks": len(chunks)
-    }
+        vectorstore = Chroma.from_documents(
+            documents=chunks,
+            embedding=embeddings
+        )
+
+        return {
+            "message": "PDF cargado correctamente",
+            "filename": file.filename,
+            "pages": len(documents),
+            "chunks": len(chunks)
+        }
+
+    except Exception as e:
+
+        return {
+            "error": str(e)
+        }
 
 
 # =========================
@@ -284,21 +298,23 @@ def ask_pdf(request: PDFQuestionRequest):
 
     global vectorstore
 
-    if vectorstore is None:
-        return {
-            "error": "Primero debes subir un PDF"
-        }
+    try:
 
-    results = vectorstore.similarity_search(
-        request.question,
-        k=3
-    )
+        if vectorstore is None:
+            return {
+                "error": "Primero debes subir un PDF"
+            }
 
-    context = "\n\n".join([
-        doc.page_content for doc in results
-    ])
+        results = vectorstore.similarity_search(
+            request.question,
+            k=3
+        )
 
-    prompt = f"""
+        context = "\n\n".join([
+            doc.page_content for doc in results
+        ])
+
+        prompt = f"""
 Responde usando únicamente la información del contexto.
 
 Si la respuesta no está en el contexto responde:
@@ -311,16 +327,22 @@ Pregunta:
 {request.question}
 """
 
-    response = llm.invoke(prompt)
+        response = llm.invoke(prompt)
 
-    return {
-        "question": request.question,
-        "answer": response.content,
-        "sources": [
-            {
-                "page": doc.metadata.get("page"),
-                "content": doc.page_content[:300]
-            }
-            for doc in results
-        ]
-    }
+        return {
+            "question": request.question,
+            "answer": response.content,
+            "sources": [
+                {
+                    "page": doc.metadata.get("page"),
+                    "content": doc.page_content[:300]
+                }
+                for doc in results
+            ]
+        }
+
+    except Exception as e:
+
+        return {
+            "error": str(e)
+        }
