@@ -13,7 +13,7 @@ This project allows:
 ---
 
 # Features
-
+- Academic review export to Word (.docx)
 - AI conversational chat
 - Streaming AI responses
 - PDF upload endpoint
@@ -71,3 +71,6 @@ https://ai-chat-api-rag.onrender.com
 
 ### Academic Article Review
 POST /review-article
+
+### Export Academic Review
+POST /export-review
