@@ -1,6 +1,9 @@
 venv/
-.env
 __pycache__/
-*.pdf
-uploaded_*
-chroma/.DS_Store
+.env
+*.pyc
+.DS_Store
+reviews.db
+uploaded_files/
+dictamen_academico.docx
+dictamen_academico.pdf
