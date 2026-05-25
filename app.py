@@ -1,26 +1,72 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import (
+    StreamingResponse,
+    JSONResponse,
+    FileResponse,
+)
+
 from openai import OpenAI
 from dotenv import load_dotenv
 from pydantic import BaseModel
+
 import os
 import shutil
 import traceback
 import re
+
 from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from database import (
+    SessionLocal,
+    engine,
+    Base,
+)
+
+from models import (
+    Review,
+    User,
+)
+
+from auth import (
+    hash_password,
+    verify_password,
+)
 
 from docx import Document
 
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+)
 
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
+from reportlab.lib.styles import (
+    getSampleStyleSheet,
+)
+
+from langchain_openai import (
+    OpenAIEmbeddings,
+    ChatOpenAI,
+)
+
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter,
+)
+
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+)
+
+from langchain_community.vectorstores import (
+    FAISS,
+)
 
 load_dotenv()
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -37,7 +83,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 llm = ChatOpenAI(
     model="gpt-4.1-mini",
@@ -53,7 +101,7 @@ conversation_history = [
         "role": "system",
         "content": (
             "Eres un asistente académico y técnico. "
-            "Respondes de manera clara, breve y paso a paso."
+            "Respondes de forma clara, precisa y profesional."
         ),
     }
 ]
@@ -71,25 +119,167 @@ class PDFQuestionRequest(BaseModel):
     question: str
 
 
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+
+    finally:
+        db.close()
+
+
+def detect_ai_probability(text: str):
+    generic_patterns = [
+        "en conclusión",
+        "es importante destacar",
+        "en la actualidad",
+        "cabe mencionar",
+        "de manera significativa",
+        "en este sentido",
+        "por otro lado",
+    ]
+
+    matches = 0
+
+    text_lower = text.lower()
+
+    for pattern in generic_patterns:
+        if pattern in text_lower:
+            matches += 1
+
+    if matches >= 5:
+        return "Alta"
+
+    if matches >= 3:
+        return "Media"
+
+    return "Baja"
+
+
+def blind_review_text(text: str):
+    patterns = [
+        r"(?i)autor[a-z]*:.*",
+        r"(?i)authors?:.*",
+        r"(?i)afiliaci[oó]n:.*",
+        r"(?i)universidad.*",
+        r"(?i)correo.*",
+        r"(?i)e-mail.*",
+        r"(?i)email.*",
+        r"(?i)orcid.*",
+        r"(?i)agradecimientos.*",
+    ]
+
+    for pattern in patterns:
+        text = re.sub(
+            pattern,
+            "[DATOS OCULTOS PARA REVISIÓN CIEGA]",
+            text,
+        )
+
+    return text
+
+
 @app.get("/")
 def home():
-    return {"message": "AI Academic Reviewer API funcionando correctamente"}
+    return {
+        "message": "AI Academic Reviewer API funcionando"
+    }
+
+
+@app.post("/register")
+def register(
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    db = SessionLocal()
+
+    existing_user = (
+        db.query(User)
+        .filter(User.username == username)
+        .first()
+    )
+
+    if existing_user:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Usuario ya existe"
+            },
+        )
+
+    new_user = User(
+        username=username,
+        password=hash_password(password),
+    )
+
+    db.add(new_user)
+
+    db.commit()
+
+    return {
+        "message": "Usuario registrado"
+    }
+
+
+@app.post("/login")
+def login(
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    db = SessionLocal()
+
+    user = (
+        db.query(User)
+        .filter(User.username == username)
+        .first()
+    )
+
+    if not user:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": "Usuario no encontrado"
+            },
+        )
+
+    if not verify_password(
+        password,
+        user.password,
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": "Contraseña incorrecta"
+            },
+        )
+
+    return {
+        "message": "Login correcto",
+        "username": user.username,
+    }
 
 
 @app.post("/chat")
 def chat(request: ChatRequest):
-    conversation_history.append({"role": "user", "content": request.prompt})
+    conversation_history.append({
+        "role": "user",
+        "content": request.prompt,
+    })
 
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=conversation_history,
     )
 
-    assistant_response = response.choices[0].message.content
-
-    conversation_history.append(
-        {"role": "assistant", "content": assistant_response}
+    assistant_response = (
+        response.choices[0].message.content
     )
+
+    conversation_history.append({
+        "role": "assistant",
+        "content": assistant_response,
+    })
 
     return {
         "response": assistant_response,
@@ -99,7 +289,10 @@ def chat(request: ChatRequest):
 
 @app.post("/chat-stream")
 async def chat_stream(request: ChatRequest):
-    conversation_history.append({"role": "user", "content": request.prompt})
+    conversation_history.append({
+        "role": "user",
+        "content": request.prompt,
+    })
 
     stream = client.chat.completions.create(
         model="gpt-4.1-mini",
@@ -117,11 +310,15 @@ async def chat_stream(request: ChatRequest):
                 full_response += content
                 yield content
 
-        conversation_history.append(
-            {"role": "assistant", "content": full_response}
-        )
+        conversation_history.append({
+            "role": "assistant",
+            "content": full_response,
+        })
 
-    return StreamingResponse(generate(), media_type="text/plain")
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain",
+    )
 
 
 @app.post("/summarize")
@@ -129,12 +326,22 @@ def summarize(request: TextRequest):
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
-            {"role": "system", "content": "Resume el texto en máximo 5 líneas."},
-            {"role": "user", "content": request.text},
+            {
+                "role": "system",
+                "content": (
+                    "Resume el texto en máximo 5 líneas."
+                ),
+            },
+            {
+                "role": "user",
+                "content": request.text,
+            },
         ],
     )
 
-    return {"summary": response.choices[0].message.content}
+    return {
+        "summary": response.choices[0].message.content
+    }
 
 
 @app.post("/translate")
@@ -142,12 +349,22 @@ def translate(request: TextRequest):
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=[
-            {"role": "system", "content": "Traduce el texto al inglés."},
-            {"role": "user", "content": request.text},
+            {
+                "role": "system",
+                "content": (
+                    "Traduce el texto al inglés."
+                ),
+            },
+            {
+                "role": "user",
+                "content": request.text,
+            },
         ],
     )
 
-    return {"translation": response.choices[0].message.content}
+    return {
+        "translation": response.choices[0].message.content
+    }
 
 
 @app.post("/keywords")
@@ -157,40 +374,69 @@ def keywords(request: TextRequest):
         messages=[
             {
                 "role": "system",
-                "content": "Extrae de 5 a 10 palabras clave del texto.",
+                "content": (
+                    "Extrae de 5 a 10 palabras clave."
+                ),
             },
-            {"role": "user", "content": request.text},
+            {
+                "role": "user",
+                "content": request.text,
+            },
         ],
     )
 
-    return {"keywords": response.choices[0].message.content}
+    return {
+        "keywords": response.choices[0].message.content
+    }
 
 
 @app.post("/upload-pdf")
-def upload_pdf(file: UploadFile = File(...)):
-    global vectorstore, uploaded_documents, last_article_review
+def upload_pdf(
+    file: UploadFile = File(...),
+):
+    global vectorstore
+    global uploaded_documents
+    global last_article_review
 
     try:
-        file_path = f"uploaded_{file.filename}"
+        os.makedirs(
+            "uploaded_files",
+            exist_ok=True,
+        )
+
+        file_path = (
+            f"uploaded_files/{file.filename}"
+        )
 
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            shutil.copyfileobj(
+                file.file,
+                buffer,
+            )
 
         loader = PyPDFLoader(file_path)
+
         documents = loader.load()
 
         uploaded_documents = documents
+
         last_article_review = ""
 
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+        text_splitter = (
+            RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+            )
         )
 
-        chunks = text_splitter.split_documents(documents)
+        chunks = text_splitter.split_documents(
+            documents
+        )
 
         embeddings = OpenAIEmbeddings(
-            api_key=os.getenv("OPENAI_API_KEY"),
+            api_key=os.getenv(
+                "OPENAI_API_KEY"
+            ),
         )
 
         vectorstore = FAISS.from_documents(
@@ -210,7 +456,9 @@ def upload_pdf(file: UploadFile = File(...)):
 
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)},
+            content={
+                "error": str(e)
+            },
         )
 
 
@@ -222,18 +470,25 @@ def ask_pdf(request: PDFQuestionRequest):
         if vectorstore is None:
             return JSONResponse(
                 status_code=400,
-                content={"error": "Primero debes subir un PDF"},
+                content={
+                    "error": (
+                        "Primero debes subir un PDF"
+                    )
+                },
             )
 
-        results = vectorstore.similarity_search(request.question, k=3)
+        results = vectorstore.similarity_search(
+            request.question,
+            k=3,
+        )
 
-        context = "\n\n".join([doc.page_content for doc in results])
+        context = "\n\n".join([
+            doc.page_content
+            for doc in results
+        ])
 
         prompt = f"""
 Responde usando únicamente la información del contexto.
-
-Si la respuesta no está en el contexto responde:
-"No encontré esa información en el documento."
 
 Contexto:
 {context}
@@ -245,12 +500,13 @@ Pregunta:
         response = llm.invoke(prompt)
 
         return {
-            "question": request.question,
             "answer": response.content,
             "sources": [
                 {
                     "page": doc.metadata.get("page"),
-                    "content": doc.page_content[:300],
+                    "content": (
+                        doc.page_content[:300]
+                    ),
                 }
                 for doc in results
             ],
@@ -261,27 +517,10 @@ Pregunta:
 
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)},
+            content={
+                "error": str(e)
+            },
         )
-
-
-def blind_review_text(text: str):
-    patterns = [
-        r"(?i)autor[a-z]*:.*",
-        r"(?i)authors?:.*",
-        r"(?i)afiliaci[oó]n:.*",
-        r"(?i)universidad.*",
-        r"(?i)correo.*",
-        r"(?i)e-mail.*",
-        r"(?i)email.*",
-        r"(?i)orcid.*",
-        r"(?i)agradecimientos.*",
-    ]
-
-    for pattern in patterns:
-        text = re.sub(pattern, "[DATOS OCULTOS PARA REVISIÓN CIEGA]", text)
-
-    return text
 
 
 @app.post("/review-article")
@@ -289,19 +528,29 @@ def review_article(
     review_type: str = Form("Scopus"),
     blind_review: bool = Form(True),
 ):
-    global uploaded_documents, last_article_review
+    global uploaded_documents
+    global last_article_review
 
     try:
         if not uploaded_documents:
             return JSONResponse(
                 status_code=400,
-                content={"error": "Primero debes subir un artículo PDF"},
+                content={
+                    "error": (
+                        "Primero debes subir un artículo PDF"
+                    )
+                },
             )
 
-        full_text = "\n\n".join([doc.page_content for doc in uploaded_documents])
+        full_text = "\n\n".join([
+            doc.page_content
+            for doc in uploaded_documents
+        ])
 
         if blind_review:
-            full_text = blind_review_text(full_text)
+            full_text = blind_review_text(
+                full_text
+            )
 
         max_chars = 30000
 
@@ -318,175 +567,263 @@ Debes actuar simultáneamente como:
 
 1. Revisor metodológico
 2. Revisor teórico
-3. Revisor editorial y de redacción
-4. Revisor APA y formato
+3. Revisor editorial
+4. Revisor APA
 5. Editor en jefe
-
-Tu función es elaborar un dictamen académico riguroso, crítico, objetivo,
-constructivo y útil para mejorar la calidad científica, metodológica, teórica
-y editorial del manuscrito.
-
-Mantén un tono profesional, académico y humano. Evita frases genéricas,
-superficiales o excesivamente duras.
 
 Analiza el siguiente artículo científico:
 
-ARTÍCULO:
 {full_text}
 
-Genera el dictamen con esta estructura exacta:
+Genera un dictamen PROFUNDO, EXTENSO, CRÍTICO y CONSTRUCTIVO.
+
+Usa EXACTAMENTE esta estructura:
 
 # Dictamen académico multiagente
 
-## Badge de dictamen editorial
+# Badge de dictamen editorial
 
-Indica SOLO UNA opción:
-- Aceptado sin cambios
-- Aceptado con cambios menores
-- Requiere cambios mayores
-- Rechazado
+# Score general del artículo
 
-## Score general del artículo
+# Revisión metodológica
 
-Genera tabla markdown:
+# Revisión teórica
 
-| Criterio | Score |
-|---|---|
-| Originalidad | X/10 |
-| Metodología | X/10 |
-| Marco teórico | X/10 |
-| Redacción | X/10 |
-| Resultados | X/10 |
-| Discusión | X/10 |
-| APA | X/10 |
+# Revisión editorial y de redacción
 
-## Revisión metodológica
+# Revisión APA y formato
 
-Evalúa:
-- claridad del problema de investigación;
-- diseño metodológico;
-- congruencia entre objetivos, metodología y resultados;
-- tipo de estudio;
-- población, muestra o corpus;
-- técnicas de recolección de datos;
-- técnicas de análisis;
-- validez, confiabilidad o credibilidad;
-- limitaciones;
-- posibles sesgos;
-- suficiencia de la explicación metodológica.
+# Tabla sintética de observaciones
 
-Incluye observaciones específicas y recomendaciones concretas.
+# Fortalezas
 
-## Revisión teórica
+# Debilidades
 
-Evalúa:
-- pertinencia del marco teórico;
-- actualidad de la literatura;
-- profundidad conceptual;
-- claridad de categorías, variables o constructos;
-- relación entre teoría, problema y hallazgos;
-- originalidad;
-- aporte científico;
-- diálogo con literatura reciente.
+# Recomendaciones concretas
 
-Incluye observaciones específicas y recomendaciones concretas.
-
-## Revisión editorial y de redacción
-
-Evalúa:
-- título;
-- resumen;
-- palabras clave;
-- introducción;
-- planteamiento del problema;
-- objetivos;
-- justificación;
-- resultados;
-- discusión;
-- conclusiones;
-- coherencia general;
-- cohesión entre apartados;
-- claridad argumentativa;
-- redacción académica;
-- repeticiones;
-- ambigüedades;
-- transiciones débiles;
-- posible redacción artificial o excesivamente genérica.
-
-Incluye observaciones específicas y recomendaciones concretas.
-
-## Revisión APA y formato
-
-Evalúa:
-- uso de citas;
-- correspondencia entre citas y referencias;
-- suficiencia y actualidad de referencias;
-- formato APA 7;
-- tablas;
-- figuras;
-- mención de tablas y figuras en el texto;
-- consistencia editorial.
-
-No inventes referencias. Si no puedes verificar algo con el texto disponible, indícalo.
-
-## Tabla sintética de observaciones
-
-Genera tabla markdown:
-
-| Apartado | Problema | Recomendación | Prioridad |
-|---|---|---|---|
-
-## Fortalezas
-
-## Debilidades
-
-## Recomendaciones concretas
-
-## Evaluación por criterios
-
-Genera tabla markdown:
-
-| Criterio | Valoración cualitativa | Puntuación /10 |
-|---|---|---|
-
-Criterios:
-- Originalidad
-- Pertinencia del tema
-- Rigor metodológico
-- Sustento teórico
-- Claridad de resultados
-- Discusión
-- Redacción académica
-- Formato APA
-
-## Dictamen final del editor en jefe
-
-Incluye:
-- Nivel de aporte científico
-- Nivel de rigor metodológico
-- Nivel de claridad editorial
-- Recomendación editorial final, eligiendo solo una:
-  - Aceptado sin cambios
-  - Aceptado con cambios menores
-  - Requiere cambios mayores
-  - Rechazado
-
-Redacta todo en español académico.
+# Dictamen final del editor en jefe
 """
 
         response = llm.invoke(review_prompt)
 
         last_article_review = response.content
 
-        return {"review": last_article_review}
+        ai_probability = detect_ai_probability(
+            response.content
+        )
+
+        badge = (
+            "Requiere cambios mayores"
+        )
+
+        review_lower = (
+            response.content.lower()
+        )
+
+        if (
+            "aceptado sin cambios"
+            in review_lower
+        ):
+            badge = (
+                "Aceptado sin cambios"
+            )
+
+        elif (
+            "aceptado con cambios menores"
+            in review_lower
+        ):
+            badge = (
+                "Aceptado con cambios menores"
+            )
+
+        elif "rechazado" in review_lower:
+            badge = "Rechazado"
+
+        db = SessionLocal()
+
+        auto_score = str(
+            min(
+                100,
+                max(
+                    55,
+                    len(response.content)
+                    // 120
+                ),
+            )
+        )
+
+        new_review = Review(
+            filename="uploaded_article.pdf",
+            review_type=review_type,
+            badge=badge,
+            score=auto_score,
+            review=response.content,
+            ai_probability=ai_probability,
+        )
+
+        db.add(new_review)
+
+        db.commit()
+
+        return {
+            "review": response.content,
+            "badge": badge,
+            "ai_probability": ai_probability,
+            "score": auto_score,
+        }
 
     except Exception as e:
         traceback.print_exc()
 
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)},
+            content={
+                "error": str(e)
+            },
         )
+
+
+@app.get("/reviews")
+def get_reviews():
+    db = SessionLocal()
+
+    reviews = (
+        db.query(Review)
+        .order_by(
+            Review.created_at.desc()
+        )
+        .all()
+    )
+
+    return [
+        {
+            "id": review.id,
+            "filename": review.filename,
+            "review_type": review.review_type,
+            "badge": review.badge,
+            "score": review.score,
+            "ai_probability": (
+                review.ai_probability
+            ),
+            "created_at": (
+                review.created_at
+            ),
+        }
+        for review in reviews
+    ]
+
+
+@app.get("/dashboard")
+def dashboard():
+    db = SessionLocal()
+
+    reviews = db.query(Review).all()
+
+    total = len(reviews)
+
+    accepted = len([
+        r
+        for r in reviews
+        if r.badge
+        == "Aceptado sin cambios"
+    ])
+
+    minor = len([
+        r
+        for r in reviews
+        if r.badge
+        == "Aceptado con cambios menores"
+    ])
+
+    major = len([
+        r
+        for r in reviews
+        if r.badge
+        == "Requiere cambios mayores"
+    ])
+
+    rejected = len([
+        r
+        for r in reviews
+        if r.badge
+        == "Rechazado"
+    ])
+
+    return {
+        "total_reviews": total,
+        "accepted": accepted,
+        "minor_changes": minor,
+        "major_changes": major,
+        "rejected": rejected,
+    }
+
+
+@app.get("/review/{review_id}")
+def get_review(review_id: int):
+    db = SessionLocal()
+
+    review = (
+        db.query(Review)
+        .filter(
+            Review.id == review_id
+        )
+        .first()
+    )
+
+    if not review:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": (
+                    "Revisión no encontrada"
+                )
+            },
+        )
+
+    return {
+        "id": review.id,
+        "filename": review.filename,
+        "review_type": review.review_type,
+        "badge": review.badge,
+        "score": review.score,
+        "review": review.review,
+        "ai_probability": (
+            review.ai_probability
+        ),
+        "created_at": review.created_at,
+    }
+
+
+@app.post("/compare-reviews")
+def compare_reviews(
+    original_text: str = Form(...),
+    corrected_text: str = Form(...),
+):
+    prompt = f"""
+Compara ambas versiones de un artículo académico.
+
+VERSIÓN ORIGINAL:
+{original_text}
+
+VERSIÓN CORREGIDA:
+{corrected_text}
+
+Evalúa:
+
+1. Qué observaciones fueron atendidas
+2. Qué problemas persisten
+3. Qué mejoró
+4. Qué sigue faltando
+5. Nivel de mejora general
+
+Redacta en formato académico.
+"""
+
+    response = llm.invoke(prompt)
+
+    return {
+        "comparison": response.content
+    }
 
 
 @app.post("/export-review")
@@ -502,54 +839,71 @@ def export_review_word():
         if not last_article_review:
             return JSONResponse(
                 status_code=400,
-                content={"error": "Primero debes generar un dictamen académico"},
+                content={
+                    "error": (
+                        "Primero debes generar un dictamen"
+                    )
+                },
             )
 
         document = Document()
 
-        document.add_heading("Dictamen académico de artículo científico", level=1)
-
-        document.add_paragraph(
-            f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        document.add_heading(
+            "Dictamen académico",
+            level=1,
         )
 
-        document.add_paragraph("")
+        document.add_paragraph(
+            (
+                "Fecha: "
+                f"{datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            )
+        )
 
-        for line in last_article_review.split("\n"):
-            clean_line = line.strip()
+        for line in (
+            last_article_review.split("\n")
+        ):
+            clean = line.strip()
 
-            if not clean_line:
-                document.add_paragraph("")
+            if not clean:
                 continue
 
-            if clean_line.startswith("# "):
-                document.add_heading(clean_line.replace("# ", ""), level=1)
+            if clean.startswith("# "):
+                document.add_heading(
+                    clean.replace(
+                        "# ",
+                        "",
+                    ),
+                    level=1,
+                )
 
-            elif clean_line.startswith("## "):
-                document.add_heading(clean_line.replace("## ", ""), level=2)
-
-            elif clean_line.startswith("### "):
-                document.add_heading(clean_line.replace("### ", ""), level=3)
-
-            elif clean_line.startswith("- "):
-                document.add_paragraph(
-                    clean_line.replace("- ", ""),
-                    style="List Bullet",
+            elif clean.startswith("## "):
+                document.add_heading(
+                    clean.replace(
+                        "## ",
+                        "",
+                    ),
+                    level=2,
                 )
 
             else:
-                document.add_paragraph(clean_line)
+                document.add_paragraph(
+                    clean
+                )
 
-        file_path = "dictamen_academico.docx"
+        file_path = (
+            "dictamen_academico.docx"
+        )
 
         document.save(file_path)
 
         return FileResponse(
             path=file_path,
-            filename="dictamen_academico.docx",
+            filename=(
+                "dictamen_academico.docx"
+            ),
             media_type=(
-                "application/vnd.openxmlformats-officedocument."
-                "wordprocessingml.document"
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             ),
         )
 
@@ -558,7 +912,9 @@ def export_review_word():
 
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)},
+            content={
+                "error": str(e)
+            },
         )
 
 
@@ -570,47 +926,78 @@ def export_review_pdf():
         if not last_article_review:
             return JSONResponse(
                 status_code=400,
-                content={"error": "Primero debes generar un dictamen académico"},
+                content={
+                    "error": (
+                        "Primero debes generar un dictamen"
+                    )
+                },
             )
 
-        file_path = "dictamen_academico.pdf"
+        file_path = (
+            "dictamen_academico.pdf"
+        )
 
-        doc = SimpleDocTemplate(file_path)
-        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(
+            file_path
+        )
+
+        styles = (
+            getSampleStyleSheet()
+        )
+
         elements = []
 
         elements.append(
-            Paragraph("Dictamen académico de artículo científico", styles["Heading1"])
+            Paragraph(
+                "Dictamen académico",
+                styles["Heading1"],
+            )
         )
-        elements.append(Spacer(1, 12))
+
+        elements.append(
+            Spacer(1, 12)
+        )
 
         elements.append(
             Paragraph(
-                f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+                (
+                    "Fecha: "
+                    f"{datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                ),
                 styles["BodyText"],
             )
         )
-        elements.append(Spacer(1, 12))
 
-        for line in last_article_review.split("\n"):
-            clean_line = line.strip()
+        elements.append(
+            Spacer(1, 12)
+        )
 
-            if not clean_line:
-                elements.append(Spacer(1, 8))
+        for line in (
+            last_article_review.split("\n")
+        ):
+            clean = line.strip()
+
+            if not clean:
                 continue
 
-            clean_line = clean_line.replace("#", "")
+            elements.append(
+                Paragraph(
+                    clean,
+                    styles["BodyText"],
+                )
+            )
 
             elements.append(
-                Paragraph(clean_line, styles["BodyText"])
+                Spacer(1, 8)
             )
-            elements.append(Spacer(1, 8))
 
         doc.build(elements)
 
         return FileResponse(
             path=file_path,
-            filename="dictamen_academico.pdf",
+            filename=(
+                "dictamen_academico.pdf"
+            ),
             media_type="application/pdf",
         )
 
@@ -619,5 +1006,7 @@ def export_review_pdf():
 
         return JSONResponse(
             status_code=500,
-            content={"error": str(e)},
+            content={
+                "error": str(e)
+            },
         )

@@ -12,3 +12,7 @@ faiss-cpu
 pypdf
 python-docx
 reportlab
+sqlalchemy
+passlib
+bcrypt
+python-jose
