@@ -68,3 +68,6 @@ https://ai-chat-api-rag.onrender.com
 - Embeddings: OpenAI Embeddings
 - Vector Store: FAISS
 - Retrieval: LangChain RAG Pipeline
+
+### Academic Article Review
+POST /review-article
