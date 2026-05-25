@@ -11,7 +11,7 @@ import traceback
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 
 load_dotenv()
 
@@ -223,13 +223,12 @@ def upload_pdf(file: UploadFile = File(...)):
 
         print("Embeddings inicializados")
 
-        vectorstore = Chroma.from_documents(
+        vectorstore = FAISS.from_documents(
             documents=chunks,
-            embedding=embeddings,
-            persist_directory="./chroma_db"
+            embedding=embeddings
         )
 
-        print("Vectorstore creado correctamente")
+        print("Vectorstore FAISS creado correctamente")
 
         return {
             "message": "PDF cargado correctamente",
@@ -255,16 +254,12 @@ def ask_pdf(request: PDFQuestionRequest):
 
     try:
         if vectorstore is None:
-            embeddings = OpenAIEmbeddings(
-                api_key=os.getenv("OPENAI_API_KEY")
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Primero debes subir un PDF"
+                }
             )
-
-            vectorstore = Chroma(
-                persist_directory="./chroma_db",
-                embedding_function=embeddings
-            )
-
-            print("Vectorstore recuperado desde disco")
 
         results = vectorstore.similarity_search(
             request.question,
