@@ -1,4 +1,3 @@
-cat > security.py << 'EOF'
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
@@ -50,4 +49,3 @@ def admin_required(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Acceso denegado")
 
     return current_user
-EOF

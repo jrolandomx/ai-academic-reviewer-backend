@@ -1,6 +1,3 @@
-cd ~/ai-chat-api
-
-cat > models.py << 'EOF'
 from sqlalchemy import Column, Integer, String, DateTime, Text
 from datetime import datetime
 from database import Base
@@ -26,4 +23,3 @@ class Review(Base):
     ai_probability = Column(String)
     badge = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
-EOF
