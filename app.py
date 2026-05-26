@@ -1,13 +1,31 @@
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    Form,
+    Depends,
+    HTTPException,
+)
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
 from openai import OpenAI
 from dotenv import load_dotenv
+
 from datetime import datetime
+
 from docx import Document
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+)
+
 from reportlab.lib.styles import getSampleStyleSheet
 
 import os
@@ -15,8 +33,6 @@ import shutil
 import traceback
 import re
 
-from pdf_generator import generate_review_pdf
-from fastapi.responses import Response
 from database import SessionLocal, engine, Base
 from models import User, Review, Article
 from auth import hash_password, verify_password, create_access_token
@@ -24,11 +40,14 @@ from security import get_current_user, admin_required
 
 from langchain_community.document_loaders import PyPDFLoader
 
+
 load_dotenv()
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="AI Academic Reviewer API")
+app = FastAPI(
+    title="AI Academic Reviewer API"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,7 +62,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 uploaded_pdf_text = ""
 uploaded_filename = ""
@@ -67,8 +88,10 @@ class CompareRequest(BaseModel):
 
 def get_db():
     db = SessionLocal()
+
     try:
         yield db
+
     finally:
         db.close()
 
@@ -87,7 +110,11 @@ def blind_review_text(text: str):
     ]
 
     for pattern in patterns:
-        text = re.sub(pattern, "[DATOS OCULTOS PARA REVISIÓN CIEGA]", text)
+        text = re.sub(
+            pattern,
+            "[DATOS OCULTOS PARA REVISIÓN CIEGA]",
+            text,
+        )
 
     return text
 
@@ -161,15 +188,27 @@ def status_from_badge(badge: str):
 
 @app.get("/")
 def root():
-    return {"message": "AI Academic Reviewer API funcionando correctamente"}
+    return {
+        "message": "AI Academic Reviewer API funcionando correctamente"
+    }
 
 
 @app.post("/register")
-def register(auth: AuthRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == auth.username).first()
+def register(
+    auth: AuthRequest,
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(User.username == auth.username)
+        .first()
+    )
 
     if user:
-        raise HTTPException(status_code=400, detail="Usuario ya existe")
+        raise HTTPException(
+            status_code=400,
+            detail="Usuario ya existe",
+        )
 
     new_user = User(
         username=auth.username,
@@ -180,20 +219,42 @@ def register(auth: AuthRequest, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
 
-    return {"message": "Usuario registrado"}
+    return {
+        "message": "Usuario registrado"
+    }
 
 
 @app.post("/login")
-def login(auth: AuthRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == auth.username).first()
+def login(
+    auth: AuthRequest,
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(User.username == auth.username)
+        .first()
+    )
 
     if not user:
-        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=401,
+            detail="Usuario no encontrado",
+        )
 
-    if not verify_password(auth.password, user.password):
-        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+    if not verify_password(
+        auth.password,
+        user.password,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Contraseña incorrecta",
+        )
 
-    token = create_access_token({"sub": user.username})
+    token = create_access_token(
+        {
+            "sub": user.username
+        }
+    )
 
     return {
         "access_token": token,
@@ -201,24 +262,38 @@ def login(auth: AuthRequest, db: Session = Depends(get_db)):
         "username": user.username,
         "role": user.role,
     }
-
-
 @app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
-    global uploaded_pdf_text, uploaded_filename, last_article_review
+async def upload_pdf(
+    file: UploadFile = File(...),
+):
+    global uploaded_pdf_text
+    global uploaded_filename
+    global last_article_review
 
     try:
-        os.makedirs("uploaded_files", exist_ok=True)
+        os.makedirs(
+            "uploaded_files",
+            exist_ok=True,
+        )
 
         file_path = f"uploaded_files/{file.filename}"
 
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            shutil.copyfileobj(
+                file.file,
+                buffer,
+            )
 
         loader = PyPDFLoader(file_path)
         documents = loader.load()
 
-        uploaded_pdf_text = "\n\n".join([doc.page_content for doc in documents])
+        uploaded_pdf_text = "\n\n".join(
+            [
+                doc.page_content
+                for doc in documents
+            ]
+        )
+
         uploaded_filename = file.filename
         last_article_review = ""
 
@@ -230,7 +305,13 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": str(e)})
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
 
 
 @app.post("/articles")
@@ -240,12 +321,18 @@ async def create_article(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    os.makedirs("uploaded_files", exist_ok=True)
+    os.makedirs(
+        "uploaded_files",
+        exist_ok=True,
+    )
 
     file_path = f"uploaded_files/{file.filename}"
 
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        shutil.copyfileobj(
+            file.file,
+            buffer,
+        )
 
     article = Article(
         title=title,
@@ -267,8 +354,14 @@ async def create_article(
 
 
 @app.get("/articles")
-def get_articles(db: Session = Depends(get_db)):
-    articles = db.query(Article).order_by(Article.created_at.desc()).all()
+def get_articles(
+    db: Session = Depends(get_db),
+):
+    articles = (
+        db.query(Article)
+        .order_by(Article.created_at.desc())
+        .all()
+    )
 
     return [
         {
@@ -284,11 +377,21 @@ def get_articles(db: Session = Depends(get_db)):
 
 
 @app.get("/articles/{article_id}")
-def get_article(article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
+def get_article(
+    article_id: int,
+    db: Session = Depends(get_db),
+):
+    article = (
+        db.query(Article)
+        .filter(Article.id == article_id)
+        .first()
+    )
 
     if not article:
-        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Artículo no encontrado",
+        )
 
     return {
         "id": article.id,
@@ -318,17 +421,31 @@ def assign_reviewer(
     current_user: User = Depends(admin_required),
     db: Session = Depends(get_db),
 ):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    reviewer = db.query(User).filter(User.id == reviewer_id).first()
+    article = (
+        db.query(Article)
+        .filter(Article.id == article_id)
+        .first()
+    )
+
+    reviewer = (
+        db.query(User)
+        .filter(User.id == reviewer_id)
+        .first()
+    )
 
     if not article:
-        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Artículo no encontrado",
+        )
 
     if not reviewer:
-        raise HTTPException(status_code=404, detail="Revisor no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Revisor no encontrado",
+        )
 
     article.status = "under_review"
-
     db.commit()
 
     return {
@@ -357,12 +474,22 @@ def update_article_status(
     ]
 
     if status not in allowed_statuses:
-        raise HTTPException(status_code=400, detail="Estado editorial no válido")
+        raise HTTPException(
+            status_code=400,
+            detail="Estado editorial no válido",
+        )
 
-    article = db.query(Article).filter(Article.id == article_id).first()
+    article = (
+        db.query(Article)
+        .filter(Article.id == article_id)
+        .first()
+    )
 
     if not article:
-        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Artículo no encontrado",
+        )
 
     article.status = status
     db.commit()
@@ -375,12 +502,17 @@ def update_article_status(
 
 
 @app.post("/ask-pdf")
-async def ask_pdf(question: str = Form(...)):
+async def ask_pdf(
+    question: str = Form(...),
+):
     global uploaded_pdf_text
 
     try:
         if not uploaded_pdf_text:
-            raise HTTPException(status_code=400, detail="Primero debes subir un PDF")
+            raise HTTPException(
+                status_code=400,
+                detail="Primero debes subir un PDF",
+            )
 
         context = uploaded_pdf_text[:25000]
 
@@ -399,9 +531,14 @@ PREGUNTA:
             messages=[
                 {
                     "role": "system",
-                    "content": "Eres un asistente académico experto en análisis documental.",
+                    "content": (
+                        "Eres un asistente académico experto en análisis documental."
+                    ),
                 },
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
         )
 
@@ -419,10 +556,14 @@ PREGUNTA:
 
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": str(e)})
 
-
-@app.post("/review-article")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
+    @app.post("/review-article")
 async def review_article(
     review_type: str = Form(...),
     blind_review: bool = Form(...),
@@ -430,7 +571,9 @@ async def review_article(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    global uploaded_pdf_text, uploaded_filename, last_article_review
+    global uploaded_pdf_text
+    global uploaded_filename
+    global last_article_review
 
     try:
         if not uploaded_pdf_text:
@@ -507,9 +650,14 @@ Usa tabla Markdown:
             messages=[
                 {
                     "role": "system",
-                    "content": "Eres un árbitro científico riguroso, humano y constructivo.",
+                    "content": (
+                        "Eres un árbitro científico riguroso, humano y constructivo."
+                    ),
                 },
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
         )
 
@@ -522,7 +670,11 @@ Usa tabla Markdown:
         article = None
 
         if article_id:
-            article = db.query(Article).filter(Article.id == article_id).first()
+            article = (
+                db.query(Article)
+                .filter(Article.id == article_id)
+                .first()
+            )
 
         if not article:
             article = Article(
@@ -530,6 +682,7 @@ Usa tabla Markdown:
                 filename=uploaded_filename or "uploaded_article.pdf",
                 status="under_review",
             )
+
             db.add(article)
             db.commit()
             db.refresh(article)
@@ -566,11 +719,19 @@ Usa tabla Markdown:
 
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": str(e)})
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
 
 
 @app.post("/chat")
-async def chat(chat: ChatRequest):
+async def chat(
+    chat: ChatRequest,
+):
     user_message = chat.prompt or chat.message or ""
 
     response = client.chat.completions.create(
@@ -580,16 +741,26 @@ async def chat(chat: ChatRequest):
                 "role": "system",
                 "content": "Eres un asistente académico claro y profesional.",
             },
-            {"role": "user", "content": user_message},
+            {
+                "role": "user",
+                "content": user_message,
+            },
         ],
     )
 
-    return {"response": response.choices[0].message.content}
+    return {
+        "response": response.choices[0].message.content
+    }
 
 
 @app.post("/compare")
-async def compare_versions_json(request: CompareRequest):
-    return compare_logic(request.original_text, request.corrected_text)
+async def compare_versions_json(
+    request: CompareRequest,
+):
+    return compare_logic(
+        request.original_text,
+        request.corrected_text,
+    )
 
 
 @app.post("/compare-reviews")
@@ -597,10 +768,16 @@ async def compare_versions_form(
     original_text: str = Form(...),
     corrected_text: str = Form(...),
 ):
-    return compare_logic(original_text, corrected_text)
+    return compare_logic(
+        original_text,
+        corrected_text,
+    )
 
 
-def compare_logic(original_text: str, corrected_text: str):
+def compare_logic(
+    original_text: str,
+    corrected_text: str,
+):
     prompt = f"""
 Compara ambas versiones de un artículo académico.
 
@@ -625,18 +802,31 @@ Redacta en formato académico.
         messages=[
             {
                 "role": "system",
-                "content": "Eres un experto en evaluación académica y mejora de manuscritos.",
+                "content": (
+                    "Eres un experto en evaluación académica y mejora de manuscritos."
+                ),
             },
-            {"role": "user", "content": prompt},
+            {
+                "role": "user",
+                "content": prompt,
+            },
         ],
     )
 
-    return {"comparison": response.choices[0].message.content}
+    return {
+        "comparison": response.choices[0].message.content
+    }
 
 
 @app.get("/reviews")
-def get_reviews(db: Session = Depends(get_db)):
-    reviews = db.query(Review).order_by(Review.created_at.desc()).all()
+def get_reviews(
+    db: Session = Depends(get_db),
+):
+    reviews = (
+        db.query(Review)
+        .order_by(Review.created_at.desc())
+        .all()
+    )
 
     return [
         {
@@ -655,16 +845,32 @@ def get_reviews(db: Session = Depends(get_db)):
 
 
 @app.get("/review/{review_id}")
-def get_review_alias(review_id: int, db: Session = Depends(get_db)):
-    return get_review(review_id, db)
+def get_review_alias(
+    review_id: int,
+    db: Session = Depends(get_db),
+):
+    return get_review(
+        review_id,
+        db,
+    )
 
 
 @app.get("/reviews/{review_id}")
-def get_review(review_id: int, db: Session = Depends(get_db)):
-    review = db.query(Review).filter(Review.id == review_id).first()
+def get_review(
+    review_id: int,
+    db: Session = Depends(get_db),
+):
+    review = (
+        db.query(Review)
+        .filter(Review.id == review_id)
+        .first()
+    )
 
     if not review:
-        raise HTTPException(status_code=404, detail="Revisión no encontrada")
+        raise HTTPException(
+            status_code=404,
+            detail="Revisión no encontrada",
+        )
 
     return {
         "id": review.id,
@@ -679,29 +885,65 @@ def get_review(review_id: int, db: Session = Depends(get_db)):
         "ai_probability": review.ai_probability,
         "created_at": review.created_at,
     }
-
-
 @app.get("/dashboard")
-def dashboard(db: Session = Depends(get_db)):
+def dashboard(
+    db: Session = Depends(get_db),
+):
     reviews = db.query(Review).all()
     articles = db.query(Article).all()
 
     return {
         "total_reviews": len(reviews),
         "total_articles": len(articles),
-        "accepted": len([r for r in reviews if r.badge == "Aceptado sin cambios"]),
+        "accepted": len(
+            [
+                review
+                for review in reviews
+                if review.badge == "Aceptado sin cambios"
+            ]
+        ),
         "minor_changes": len(
-            [r for r in reviews if r.badge == "Aceptado con cambios menores"]
+            [
+                review
+                for review in reviews
+                if review.badge == "Aceptado con cambios menores"
+            ]
         ),
         "major_changes": len(
-            [r for r in reviews if r.badge == "Requiere cambios mayores"]
+            [
+                review
+                for review in reviews
+                if review.badge == "Requiere cambios mayores"
+            ]
         ),
-        "rejected": len([r for r in reviews if r.badge == "Rechazado"]),
-        "submitted_articles": len([a for a in articles if a.status == "submitted"]),
+        "rejected": len(
+            [
+                review
+                for review in reviews
+                if review.badge == "Rechazado"
+            ]
+        ),
+        "submitted_articles": len(
+            [
+                article
+                for article in articles
+                if article.status == "submitted"
+            ]
+        ),
         "under_review_articles": len(
-            [a for a in articles if a.status == "under_review"]
+            [
+                article
+                for article in articles
+                if article.status == "under_review"
+            ]
         ),
-        "published_articles": len([a for a in articles if a.status == "published"]),
+        "published_articles": len(
+            [
+                article
+                for article in articles
+                if article.status == "published"
+            ]
+        ),
     }
 
 
@@ -729,15 +971,30 @@ def update_user_role(
     current_user: User = Depends(admin_required),
     db: Session = Depends(get_db),
 ):
-    allowed_roles = ["admin", "editor", "reviewer", "author"]
+    allowed_roles = [
+        "admin",
+        "editor",
+        "reviewer",
+        "author",
+    ]
 
     if role not in allowed_roles:
-        raise HTTPException(status_code=400, detail="Rol no válido")
+        raise HTTPException(
+            status_code=400,
+            detail="Rol no válido",
+        )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
 
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
 
     user.role = role
     db.commit()
@@ -759,11 +1016,21 @@ def export_review_word():
     global last_article_review
 
     if not last_article_review:
-        raise HTTPException(status_code=400, detail="Primero debes generar un dictamen")
+        raise HTTPException(
+            status_code=400,
+            detail="Primero debes generar un dictamen",
+        )
 
     document = Document()
-    document.add_heading("Dictamen académico", level=1)
-    document.add_paragraph(f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    document.add_heading(
+        "Dictamen académico",
+        level=1,
+    )
+
+    document.add_paragraph(
+        f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    )
 
     for line in last_article_review.split("\n"):
         clean = line.strip()
@@ -772,20 +1039,37 @@ def export_review_word():
             continue
 
         if clean.startswith("# "):
-            document.add_heading(clean.replace("# ", ""), level=1)
+            document.add_heading(
+                clean.replace("# ", ""),
+                level=1,
+            )
+
         elif clean.startswith("## "):
-            document.add_heading(clean.replace("## ", ""), level=2)
+            document.add_heading(
+                clean.replace("## ", ""),
+                level=2,
+            )
+
         else:
             document.add_paragraph(clean)
 
     file_path = "dictamen_academico.docx"
+
     document.save(file_path)
 
     return FileResponse(
         path=file_path,
         filename="dictamen_academico.docx",
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
     )
+
+
+@app.get("/export-review-word")
+def export_review_word_get():
+    return export_review_word()
 
 
 @app.post("/export-review-pdf")
@@ -793,31 +1077,101 @@ def export_review_pdf():
     global last_article_review
 
     if not last_article_review:
-        raise HTTPException(status_code=400, detail="Primero debes generar un dictamen")
+        raise HTTPException(
+            status_code=400,
+            detail="Primero debes generar un dictamen",
+        )
 
     file_path = "dictamen_academico.pdf"
+
     doc = SimpleDocTemplate(file_path)
+
     styles = getSampleStyleSheet()
+
     elements = []
 
-    elements.append(Paragraph("Dictamen académico", styles["Heading1"]))
-    elements.append(Spacer(1, 12))
+    elements.append(
+        Paragraph(
+            "Universidad Veracruzana",
+            styles["Heading1"],
+        )
+    )
+
+    elements.append(
+        Paragraph(
+            "Instituto de Investigaciones en Contaduría",
+            styles["Heading2"],
+        )
+    )
+
+    elements.append(
+        Spacer(1, 12)
+    )
+
+    elements.append(
+        Paragraph(
+            "Dictamen académico asistido por IA",
+            styles["Heading1"],
+        )
+    )
+
+    elements.append(
+        Spacer(1, 12)
+    )
+
     elements.append(
         Paragraph(
             f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
             styles["BodyText"],
         )
     )
-    elements.append(Spacer(1, 12))
+
+    elements.append(
+        Spacer(1, 12)
+    )
 
     for line in last_article_review.split("\n"):
         clean = line.strip()
 
         if not clean:
+            elements.append(
+                Spacer(1, 8)
+            )
             continue
 
-        elements.append(Paragraph(clean, styles["BodyText"]))
-        elements.append(Spacer(1, 8))
+        if clean.startswith("# "):
+            elements.append(
+                Paragraph(
+                    clean.replace("# ", ""),
+                    styles["Heading2"],
+                )
+            )
+
+        elif clean.startswith("## "):
+            elements.append(
+                Paragraph(
+                    clean.replace("## ", ""),
+                    styles["Heading3"],
+                )
+            )
+
+        else:
+            safe_line = (
+                clean.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+            elements.append(
+                Paragraph(
+                    safe_line,
+                    styles["BodyText"],
+                )
+            )
+
+        elements.append(
+            Spacer(1, 8)
+        )
 
     doc.build(elements)
 
@@ -826,33 +1180,153 @@ def export_review_pdf():
         filename="dictamen_academico.pdf",
         media_type="application/pdf",
     )
-@app.get("/reviews/{review_id}/pdf")
-def download_review_pdf(review_id: int, db: Session = Depends(get_db)):
 
-    review = db.query(Review).filter(
-        Review.id == review_id
-    ).first()
+
+@app.get("/export-review-pdf")
+def export_review_pdf_get():
+    return export_review_pdf()
+
+
+@app.get("/reviews/{review_id}/pdf")
+def download_review_pdf_by_id(
+    review_id: int,
+    db: Session = Depends(get_db),
+):
+    review = (
+        db.query(Review)
+        .filter(Review.id == review_id)
+        .first()
+    )
 
     if not review:
         raise HTTPException(
             status_code=404,
-            detail="Dictamen no encontrado"
+            detail="Dictamen no encontrado",
         )
 
-    pdf = generate_review_pdf({
-        "filename": review.filename,
-        "review_type": review.review_type,
-        "score": review.score,
-        "ai_probability": review.ai_probability,
-        "badge": review.badge,
-        "observations": review.observations,
-    })
+    file_path = f"dictamen_{review.id}.pdf"
 
-    return Response(
-        content=pdf,
+    doc = SimpleDocTemplate(file_path)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(
+        Paragraph(
+            "Universidad Veracruzana",
+            styles["Heading1"],
+        )
+    )
+
+    elements.append(
+        Paragraph(
+            "Instituto de Investigaciones en Contaduría",
+            styles["Heading2"],
+        )
+    )
+
+    elements.append(
+        Spacer(1, 12)
+    )
+
+    elements.append(
+        Paragraph(
+            f"Dictamen académico #{review.id}",
+            styles["Heading1"],
+        )
+    )
+
+    elements.append(
+        Spacer(1, 12)
+    )
+
+    elements.append(
+        Paragraph(
+            f"Archivo: {review.filename}",
+            styles["BodyText"],
+        )
+    )
+
+    elements.append(
+        Paragraph(
+            f"Tipo de revisión: {review.review_type}",
+            styles["BodyText"],
+        )
+    )
+
+    elements.append(
+        Paragraph(
+            f"Resultado: {review.badge}",
+            styles["BodyText"],
+        )
+    )
+
+    elements.append(
+        Paragraph(
+            f"Score: {review.score}/100",
+            styles["BodyText"],
+        )
+    )
+
+    elements.append(
+        Paragraph(
+            f"Riesgo IA: {review.ai_probability}",
+            styles["BodyText"],
+        )
+    )
+
+    elements.append(
+        Spacer(1, 16)
+    )
+
+    review_content = review.review_content or "Sin contenido"
+
+    for line in review_content.split("\n"):
+        clean = line.strip()
+
+        if not clean:
+            elements.append(
+                Spacer(1, 8)
+            )
+            continue
+
+        if clean.startswith("# "):
+            elements.append(
+                Paragraph(
+                    clean.replace("# ", ""),
+                    styles["Heading2"],
+                )
+            )
+
+        elif clean.startswith("## "):
+            elements.append(
+                Paragraph(
+                    clean.replace("## ", ""),
+                    styles["Heading3"],
+                )
+            )
+
+        else:
+            safe_line = (
+                clean.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+
+            elements.append(
+                Paragraph(
+                    safe_line,
+                    styles["BodyText"],
+                )
+            )
+
+        elements.append(
+            Spacer(1, 8)
+        )
+
+    doc.build(elements)
+
+    return FileResponse(
+        path=file_path,
+        filename=f"dictamen_{review.id}.pdf",
         media_type="application/pdf",
-        headers={
-            "Content-Disposition":
-            f"attachment; filename=dictamen_{review.id}.pdf"
-        },
     )
