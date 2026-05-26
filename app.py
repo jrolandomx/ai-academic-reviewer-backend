@@ -24,6 +24,7 @@ from langchain_community.document_loaders import PyPDFLoader
 
 load_dotenv()
 
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="AI Academic Reviewer API")
