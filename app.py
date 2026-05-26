@@ -13,10 +13,10 @@ from reportlab.lib.styles import getSampleStyleSheet
 import os
 import shutil
 import traceback
-import random
+import re
 
 from database import SessionLocal, engine, Base
-from models import User, Review
+from models import User, Review, Article
 from auth import hash_password, verify_password, create_access_token
 from security import get_current_user, admin_required
 
@@ -34,6 +34,7 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://ai-academic-reviewer-frontend.vercel.app",
+        "https://ai-chat-frontend-one.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -68,6 +69,25 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def blind_review_text(text: str):
+    patterns = [
+        r"(?i)autor[a-z]*:.*",
+        r"(?i)authors?:.*",
+        r"(?i)afiliaci[oó]n:.*",
+        r"(?i)universidad.*",
+        r"(?i)correo.*",
+        r"(?i)e-mail.*",
+        r"(?i)email.*",
+        r"(?i)orcid.*",
+        r"(?i)agradecimientos.*",
+    ]
+
+    for pattern in patterns:
+        text = re.sub(pattern, "[DATOS OCULTOS PARA REVISIÓN CIEGA]", text)
+
+    return text
 
 
 def detect_ai_probability(text: str):
@@ -122,6 +142,19 @@ def detect_badge(text: str):
         return "Aceptado con cambios menores"
 
     return "Requiere cambios mayores"
+
+
+def status_from_badge(badge: str):
+    if badge == "Aceptado sin cambios":
+        return "accepted"
+
+    if badge == "Aceptado con cambios menores":
+        return "minor_revision"
+
+    if badge == "Rechazado":
+        return "rejected"
+
+    return "major_revision"
 
 
 @app.get("/")
@@ -198,6 +231,147 @@ async def upload_pdf(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/articles")
+async def create_article(
+    title: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    os.makedirs("uploaded_files", exist_ok=True)
+
+    file_path = f"uploaded_files/{file.filename}"
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    article = Article(
+        title=title,
+        filename=file.filename,
+        status="submitted",
+    )
+
+    db.add(article)
+    db.commit()
+    db.refresh(article)
+
+    return {
+        "message": "Artículo creado",
+        "article_id": article.id,
+        "title": article.title,
+        "filename": article.filename,
+        "status": article.status,
+    }
+
+
+@app.get("/articles")
+def get_articles(db: Session = Depends(get_db)):
+    articles = db.query(Article).order_by(Article.created_at.desc()).all()
+
+    return [
+        {
+            "id": article.id,
+            "title": article.title,
+            "filename": article.filename,
+            "status": article.status,
+            "created_at": article.created_at,
+            "reviews_count": len(article.reviews),
+        }
+        for article in articles
+    ]
+
+
+@app.get("/articles/{article_id}")
+def get_article(article_id: int, db: Session = Depends(get_db)):
+    article = db.query(Article).filter(Article.id == article_id).first()
+
+    if not article:
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+
+    return {
+        "id": article.id,
+        "title": article.title,
+        "filename": article.filename,
+        "status": article.status,
+        "created_at": article.created_at,
+        "reviews": [
+            {
+                "id": review.id,
+                "reviewer_id": review.reviewer_id,
+                "review_type": review.review_type,
+                "score": review.score,
+                "badge": review.badge,
+                "ai_probability": review.ai_probability,
+                "created_at": review.created_at,
+            }
+            for review in article.reviews
+        ],
+    }
+
+
+@app.post("/articles/{article_id}/assign")
+def assign_reviewer(
+    article_id: int,
+    reviewer_id: int = Form(...),
+    current_user: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+):
+    article = db.query(Article).filter(Article.id == article_id).first()
+    reviewer = db.query(User).filter(User.id == reviewer_id).first()
+
+    if not article:
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+
+    if not reviewer:
+        raise HTTPException(status_code=404, detail="Revisor no encontrado")
+
+    article.status = "under_review"
+
+    db.commit()
+
+    return {
+        "message": "Revisor asignado",
+        "article": article.title,
+        "reviewer": reviewer.username,
+        "status": article.status,
+    }
+
+
+@app.post("/articles/{article_id}/status")
+def update_article_status(
+    article_id: int,
+    status: str = Form(...),
+    current_user: User = Depends(admin_required),
+    db: Session = Depends(get_db),
+):
+    allowed_statuses = [
+        "submitted",
+        "under_review",
+        "minor_revision",
+        "major_revision",
+        "accepted",
+        "rejected",
+        "published",
+    ]
+
+    if status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Estado editorial no válido")
+
+    article = db.query(Article).filter(Article.id == article_id).first()
+
+    if not article:
+        raise HTTPException(status_code=404, detail="Artículo no encontrado")
+
+    article.status = status
+    db.commit()
+
+    return {
+        "message": "Estado actualizado",
+        "article_id": article.id,
+        "status": article.status,
+    }
+
+
 @app.post("/ask-pdf")
 async def ask_pdf(question: str = Form(...)):
     global uploaded_pdf_text
@@ -221,7 +395,10 @@ PREGUNTA:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres un asistente académico experto en análisis documental."},
+                {
+                    "role": "system",
+                    "content": "Eres un asistente académico experto en análisis documental.",
+                },
                 {"role": "user", "content": prompt},
             ],
         )
@@ -247,6 +424,7 @@ PREGUNTA:
 async def review_article(
     review_type: str = Form(...),
     blind_review: bool = Form(...),
+    article_id: int | None = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -254,9 +432,15 @@ async def review_article(
 
     try:
         if not uploaded_pdf_text:
-            raise HTTPException(status_code=400, detail="Primero debes subir un artículo PDF")
+            raise HTTPException(
+                status_code=400,
+                detail="Primero debes subir un artículo PDF",
+            )
 
         text = uploaded_pdf_text[:30000]
+
+        if blind_review:
+            text = blind_review_text(text)
 
         prompt = f"""
 Eres un sistema multiagente de arbitraje académico especializado en evaluación científica.
@@ -319,7 +503,10 @@ Usa tabla Markdown:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres un árbitro científico riguroso, humano y constructivo."},
+                {
+                    "role": "system",
+                    "content": "Eres un árbitro científico riguroso, humano y constructivo.",
+                },
                 {"role": "user", "content": prompt},
             ],
         )
@@ -330,7 +517,24 @@ Usa tabla Markdown:
         badge = detect_badge(review_text)
         ai_probability = detect_ai_probability(review_text)
 
+        article = None
+
+        if article_id:
+            article = db.query(Article).filter(Article.id == article_id).first()
+
+        if not article:
+            article = Article(
+                title=uploaded_filename or "Artículo sin título",
+                filename=uploaded_filename or "uploaded_article.pdf",
+                status="under_review",
+            )
+            db.add(article)
+            db.commit()
+            db.refresh(article)
+
         new_review = Review(
+            article_id=article.id,
+            reviewer_id=current_user.id,
             filename=uploaded_filename or "uploaded_article.pdf",
             review_type=review_type,
             review_content=review_text,
@@ -339,6 +543,8 @@ Usa tabla Markdown:
             badge=badge,
             created_at=datetime.utcnow(),
         )
+
+        article.status = status_from_badge(badge)
 
         db.add(new_review)
         db.commit()
@@ -352,6 +558,8 @@ Usa tabla Markdown:
             "badge": badge,
             "ai_probability": ai_probability,
             "review_id": new_review.id,
+            "article_id": article.id,
+            "article_status": article.status,
         }
 
     except Exception as e:
@@ -366,7 +574,10 @@ async def chat(chat: ChatRequest):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Eres un asistente académico claro y profesional."},
+            {
+                "role": "system",
+                "content": "Eres un asistente académico claro y profesional.",
+            },
             {"role": "user", "content": user_message},
         ],
     )
@@ -410,7 +621,10 @@ Redacta en formato académico.
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Eres un experto en evaluación académica y mejora de manuscritos."},
+            {
+                "role": "system",
+                "content": "Eres un experto en evaluación académica y mejora de manuscritos.",
+            },
             {"role": "user", "content": prompt},
         ],
     )
@@ -424,15 +638,17 @@ def get_reviews(db: Session = Depends(get_db)):
 
     return [
         {
-            "id": r.id,
-            "filename": r.filename,
-            "review_type": r.review_type,
-            "badge": r.badge,
-            "score": str(r.score),
-            "ai_probability": r.ai_probability,
-            "created_at": r.created_at,
+            "id": review.id,
+            "article_id": review.article_id,
+            "reviewer_id": review.reviewer_id,
+            "filename": review.filename,
+            "review_type": review.review_type,
+            "badge": review.badge,
+            "score": str(review.score),
+            "ai_probability": review.ai_probability,
+            "created_at": review.created_at,
         }
-        for r in reviews
+        for review in reviews
     ]
 
 
@@ -450,6 +666,8 @@ def get_review(review_id: int, db: Session = Depends(get_db)):
 
     return {
         "id": review.id,
+        "article_id": review.article_id,
+        "reviewer_id": review.reviewer_id,
         "filename": review.filename,
         "review_type": review.review_type,
         "badge": review.badge,
@@ -464,13 +682,24 @@ def get_review(review_id: int, db: Session = Depends(get_db)):
 @app.get("/dashboard")
 def dashboard(db: Session = Depends(get_db)):
     reviews = db.query(Review).all()
+    articles = db.query(Article).all()
 
     return {
         "total_reviews": len(reviews),
+        "total_articles": len(articles),
         "accepted": len([r for r in reviews if r.badge == "Aceptado sin cambios"]),
-        "minor_changes": len([r for r in reviews if r.badge == "Aceptado con cambios menores"]),
-        "major_changes": len([r for r in reviews if r.badge == "Requiere cambios mayores"]),
+        "minor_changes": len(
+            [r for r in reviews if r.badge == "Aceptado con cambios menores"]
+        ),
+        "major_changes": len(
+            [r for r in reviews if r.badge == "Requiere cambios mayores"]
+        ),
         "rejected": len([r for r in reviews if r.badge == "Rechazado"]),
+        "submitted_articles": len([a for a in articles if a.status == "submitted"]),
+        "under_review_articles": len(
+            [a for a in articles if a.status == "under_review"]
+        ),
+        "published_articles": len([a for a in articles if a.status == "published"]),
     }
 
 
@@ -498,6 +727,11 @@ def update_user_role(
     current_user: User = Depends(admin_required),
     db: Session = Depends(get_db),
 ):
+    allowed_roles = ["admin", "editor", "reviewer", "author"]
+
+    if role not in allowed_roles:
+        raise HTTPException(status_code=400, detail="Rol no válido")
+
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
