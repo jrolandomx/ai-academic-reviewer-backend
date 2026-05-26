@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from datetime import datetime
 from database import Base
 
@@ -12,10 +13,25 @@ class User(Base):
     role = Column(String, default="reviewer")
 
 
+class Article(Base):
+    __tablename__ = "articles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String)
+    filename = Column(String)
+    status = Column(String, default="submitted")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    reviews = relationship("Review", back_populates="article")
+
+
 class Review(Base):
     __tablename__ = "reviews"
 
     id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id"), nullable=True)
+    reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
     filename = Column(String)
     review_type = Column(String)
     review_content = Column(Text)
@@ -23,3 +39,5 @@ class Review(Base):
     ai_probability = Column(String)
     badge = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    article = relationship("Article", back_populates="reviews")
