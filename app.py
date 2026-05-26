@@ -15,6 +15,8 @@ import shutil
 import traceback
 import re
 
+from pdf_generator import generate_review_pdf
+from fastapi.responses import Response
 from database import SessionLocal, engine, Base
 from models import User, Review, Article
 from auth import hash_password, verify_password, create_access_token
@@ -823,4 +825,34 @@ def export_review_pdf():
         path=file_path,
         filename="dictamen_academico.pdf",
         media_type="application/pdf",
+    )
+@app.get("/reviews/{review_id}/pdf")
+def download_review_pdf(review_id: int, db: Session = Depends(get_db)):
+
+    review = db.query(Review).filter(
+        Review.id == review_id
+    ).first()
+
+    if not review:
+        raise HTTPException(
+            status_code=404,
+            detail="Dictamen no encontrado"
+        )
+
+    pdf = generate_review_pdf({
+        "filename": review.filename,
+        "review_type": review.review_type,
+        "score": review.score,
+        "ai_probability": review.ai_probability,
+        "badge": review.badge,
+        "observations": review.observations,
+    })
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition":
+            f"attachment; filename=dictamen_{review.id}.pdf"
+        },
     )
