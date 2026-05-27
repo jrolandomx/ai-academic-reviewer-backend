@@ -3,20 +3,26 @@ from fastapi import (
     UploadFile,
     File,
     Form,
-    Depends,
     HTTPException,
+    Depends,
+)
+
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
 )
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
 
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from openai import OpenAI
 from dotenv import load_dotenv
 
-from datetime import datetime
+from openai import OpenAI
+
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+)
 
 from docx import Document
 
@@ -26,59 +32,76 @@ from reportlab.platypus import (
     Spacer,
 )
 
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import (
+    getSampleStyleSheet,
+)
 
-import os
-import shutil
+from pydantic import BaseModel
+
+from datetime import datetime
+
+from database import (
+    SessionLocal,
+    engine,
+    Base,
+)
+
+from models import (
+    User,
+    Article,
+    Review,
+)
+
+from auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    get_current_user,
+    admin_required,
+)
+
 import traceback
+import shutil
+import os
 import re
-
-from database import SessionLocal, engine, Base
-from models import User, Review, Article
-from auth import hash_password, verify_password, create_access_token
-from security import get_current_user, admin_required
-
-from langchain_community.document_loaders import PyPDFLoader
 
 
 load_dotenv()
 
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
-    title="AI Academic Reviewer API"
+    title="AI Academic Reviewer",
+    version="4.0",
 )
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://ai-academic-reviewer-frontend.vercel.app",
-        "https://ai-chat-frontend-one.vercel.app",
-    ],
-    allow_credentials=False,
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+Base.metadata.create_all(bind=engine)
+
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=OPENAI_API_KEY,
 )
+
 
 uploaded_pdf_text = ""
 uploaded_filename = ""
 last_article_review = ""
 
 
-class AuthRequest(BaseModel):
-    username: str
-    password: str
-
-
 class ChatRequest(BaseModel):
-    message: str | None = None
     prompt: str | None = None
+    message: str | None = None
 
 
 class CompareRequest(BaseModel):
@@ -98,172 +121,198 @@ def get_db():
 
 def blind_review_text(text: str):
     patterns = [
-        r"(?i)autor[a-z]*:.*",
-        r"(?i)authors?:.*",
-        r"(?i)afiliaci[oó]n:.*",
-        r"(?i)universidad.*",
-        r"(?i)correo.*",
-        r"(?i)e-mail.*",
-        r"(?i)email.*",
-        r"(?i)orcid.*",
-        r"(?i)agradecimientos.*",
+        r"(?i)autor:",
+        r"(?i)authors:",
+        r"(?i)correo:",
+        r"(?i)e-mail:",
+        r"(?i)universidad",
+        r"(?i)instituto",
     ]
 
+    cleaned = text
+
     for pattern in patterns:
-        text = re.sub(
+        cleaned = re.sub(
             pattern,
-            "[DATOS OCULTOS PARA REVISIÓN CIEGA]",
-            text,
+            "[BLIND]",
+            cleaned,
         )
 
-    return text
+    return cleaned
 
 
-def detect_ai_probability(text: str):
-    patterns = [
-        "en conclusión",
-        "es importante destacar",
-        "en la actualidad",
-        "cabe mencionar",
-        "en este sentido",
-        "por otro lado",
-        "de manera significativa",
-    ]
+def calculate_score(review_text: str):
+    review_lower = review_text.lower()
 
-    count = 0
-    lower = text.lower()
+    if "rechazado" in review_lower:
+        return 40
 
-    for pattern in patterns:
-        if pattern in lower:
-            count += 1
+    if "cambios mayores" in review_lower:
+        return 55
 
-    if count >= 5:
+    if "cambios menores" in review_lower:
+        return 75
+
+    if "aceptado" in review_lower:
+        return 90
+
+    return 60
+
+
+def detect_badge(review_text: str):
+    review_lower = review_text.lower()
+
+    if "rechazado" in review_lower:
+        return "Rechazado"
+
+    if "cambios mayores" in review_lower:
+        return "Requiere cambios mayores"
+
+    if "cambios menores" in review_lower:
+        return "Aceptado con cambios menores"
+
+    if "aceptado" in review_lower:
+        return "Aceptado sin cambios"
+
+    return "Requiere cambios mayores"
+
+
+def detect_ai_probability(review_text: str):
+    review_lower = review_text.lower()
+
+    if "muy artificial" in review_lower:
         return "Alta"
 
-    if count >= 3:
+    if "moderadamente artificial" in review_lower:
         return "Media"
 
     return "Baja"
 
 
-def calculate_score(text: str):
-    return str(
-        min(
-            100,
-            max(
-                55,
-                len(text) // 120,
-            ),
-        )
-    )
-
-
-def detect_badge(text: str):
-    lower = text.lower()
-
-    if "rechazado" in lower:
-        return "Rechazado"
-
-    if "aceptado sin cambios" in lower:
-        return "Aceptado sin cambios"
-
-    if "aceptado con cambios menores" in lower:
-        return "Aceptado con cambios menores"
-
-    return "Requiere cambios mayores"
-
-
 def status_from_badge(badge: str):
-    if badge == "Aceptado sin cambios":
-        return "accepted"
+    mapping = {
+        "Aceptado sin cambios": "accepted",
+        "Aceptado con cambios menores": "minor_revision",
+        "Requiere cambios mayores": "major_revision",
+        "Rechazado": "rejected",
+    }
 
-    if badge == "Aceptado con cambios menores":
-        return "minor_revision"
-
-    if badge == "Rechazado":
-        return "rejected"
-
-    return "major_revision"
+    return mapping.get(
+        badge,
+        "under_review",
+    )
 
 
 @app.get("/")
 def root():
     return {
-        "message": "AI Academic Reviewer API funcionando correctamente"
+        "message": "AI Academic Reviewer API funcionando",
+        "status": "online",
     }
 
 
 @app.post("/register")
 def register(
-    auth: AuthRequest,
+    username: str = Form(...),
+    password: str = Form(...),
+    role: str = Form("reviewer"),
     db: Session = Depends(get_db),
 ):
-    user = (
-        db.query(User)
-        .filter(User.username == auth.username)
-        .first()
-    )
-
-    if user:
-        raise HTTPException(
-            status_code=400,
-            detail="Usuario ya existe",
+    try:
+        existing_user = (
+            db.query(User)
+            .filter(User.username == username)
+            .first()
         )
 
-    new_user = User(
-        username=auth.username,
-        password=hash_password(auth.password),
-        role="reviewer",
-    )
+        if existing_user:
+            raise HTTPException(
+                status_code=400,
+                detail="El usuario ya existe",
+            )
 
-    db.add(new_user)
-    db.commit()
+        hashed_password = hash_password(password)
 
-    return {
-        "message": "Usuario registrado"
-    }
+        new_user = User(
+            username=username,
+            password=hashed_password,
+            role=role,
+        )
+
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        return {
+            "message": "Usuario registrado correctamente",
+            "username": new_user.username,
+            "role": new_user.role,
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
 
 
 @app.post("/login")
 def login(
-    auth: AuthRequest,
+    username: str = Form(...),
+    password: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    user = (
-        db.query(User)
-        .filter(User.username == auth.username)
-        .first()
-    )
-
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Usuario no encontrado",
+    try:
+        user = (
+            db.query(User)
+            .filter(User.username == username)
+            .first()
         )
 
-    if not verify_password(
-        auth.password,
-        user.password,
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="Contraseña incorrecta",
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Usuario incorrecto",
+            )
+
+        if not verify_password(
+            password,
+            user.password,
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Contraseña incorrecta",
+            )
+
+        token = create_access_token(
+            {
+                "sub": user.username,
+                "role": user.role,
+            }
         )
 
-    token = create_access_token(
-        {
-            "sub": user.username
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "username": user.username,
+            "role": user.role,
         }
-    )
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "username": user.username,
-        "role": user.role,
-    }
+    except Exception as e:
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
 @app.post("/upload-pdf")
-async def upload_pdf(
+def upload_pdf(
     file: UploadFile = File(...),
 ):
     global uploaded_pdf_text
@@ -289,8 +338,8 @@ async def upload_pdf(
 
         uploaded_pdf_text = "\n\n".join(
             [
-                doc.page_content
-                for doc in documents
+                document.page_content
+                for document in documents
             ]
         )
 
@@ -314,43 +363,118 @@ async def upload_pdf(
         )
 
 
+@app.post("/ask-pdf")
+def ask_pdf(
+    question: str = Form(...),
+):
+    global uploaded_pdf_text
+
+    try:
+        if not uploaded_pdf_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Primero debes subir un PDF",
+            )
+
+        context = uploaded_pdf_text[:25000]
+
+        prompt = f"""
+Responde únicamente con base en el siguiente documento.
+
+DOCUMENTO:
+{context}
+
+PREGUNTA:
+{question}
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un asistente académico experto en análisis documental."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+        )
+
+        answer = response.choices[0].message.content
+
+        return {
+            "answer": answer,
+            "sources": [
+                {
+                    "page": 1,
+                    "content": uploaded_pdf_text[:300],
+                }
+            ],
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
+
+
 @app.post("/articles")
-async def create_article(
+def create_article(
     title: str = Form(...),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    os.makedirs(
-        "uploaded_files",
-        exist_ok=True,
-    )
-
-    file_path = f"uploaded_files/{file.filename}"
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(
-            file.file,
-            buffer,
+    try:
+        os.makedirs(
+            "uploaded_files",
+            exist_ok=True,
         )
 
-    article = Article(
-        title=title,
-        filename=file.filename,
-        status="submitted",
-    )
+        file_path = f"uploaded_files/{file.filename}"
 
-    db.add(article)
-    db.commit()
-    db.refresh(article)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(
+                file.file,
+                buffer,
+            )
 
-    return {
-        "message": "Artículo creado",
-        "article_id": article.id,
-        "title": article.title,
-        "filename": article.filename,
-        "status": article.status,
-    }
+        article = Article(
+            title=title,
+            filename=file.filename,
+            status="submitted",
+        )
+
+        db.add(article)
+        db.commit()
+        db.refresh(article)
+
+        return {
+            "message": "Artículo creado correctamente",
+            "article_id": article.id,
+            "title": article.title,
+            "filename": article.filename,
+            "status": article.status,
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e)
+            },
+        )
 
 
 @app.get("/articles")
@@ -454,8 +578,6 @@ def assign_reviewer(
         "reviewer": reviewer.username,
         "status": article.status,
     }
-
-
 @app.post("/articles/{article_id}/status")
 def update_article_status(
     article_id: int,
@@ -501,70 +623,8 @@ def update_article_status(
     }
 
 
-@app.post("/ask-pdf")
-async def ask_pdf(
-    question: str = Form(...),
-):
-    global uploaded_pdf_text
-
-    try:
-        if not uploaded_pdf_text:
-            raise HTTPException(
-                status_code=400,
-                detail="Primero debes subir un PDF",
-            )
-
-        context = uploaded_pdf_text[:25000]
-
-        prompt = f"""
-Responde únicamente con base en el siguiente documento.
-
-DOCUMENTO:
-{context}
-
-PREGUNTA:
-{question}
-"""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres un asistente académico experto en análisis documental."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-        )
-
-        answer = response.choices[0].message.content
-
-        return {
-            "answer": answer,
-            "sources": [
-                {
-                    "page": 1,
-                    "content": uploaded_pdf_text[:300],
-                }
-            ],
-        }
-
-    except Exception as e:
-        traceback.print_exc()
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": str(e)
-            },
-        )
-    @app.post("/review-article")
-async def review_article(
+@app.post("/review-article")
+def review_article(
     review_type: str = Form(...),
     blind_review: bool = Form(...),
     article_id: int | None = Form(None),
@@ -582,10 +642,10 @@ async def review_article(
                 detail="Primero debes subir un artículo PDF",
             )
 
-        text = uploaded_pdf_text[:30000]
+        article_text = uploaded_pdf_text[:30000]
 
         if blind_review:
-            text = blind_review_text(text)
+            article_text = blind_review_text(article_text)
 
         prompt = f"""
 Eres un sistema multiagente de arbitraje académico especializado en evaluación científica.
@@ -604,7 +664,7 @@ Actúa como:
 5. Editor en jefe
 
 ARTÍCULO:
-{text}
+{article_text}
 
 Genera un dictamen PROFUNDO, CRÍTICO, CONSTRUCTIVO y ACADÉMICO.
 
@@ -709,7 +769,7 @@ Usa tabla Markdown:
 
         return {
             "review": review_text,
-            "score": score,
+            "score": str(score),
             "badge": badge,
             "ai_probability": ai_probability,
             "review_id": new_review.id,
@@ -729,10 +789,10 @@ Usa tabla Markdown:
 
 
 @app.post("/chat")
-async def chat(
-    chat: ChatRequest,
+def chat(
+    data: ChatRequest,
 ):
-    user_message = chat.prompt or chat.message or ""
+    user_message = data.prompt or data.message or ""
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -754,7 +814,7 @@ async def chat(
 
 
 @app.post("/compare")
-async def compare_versions_json(
+def compare_versions_json(
     request: CompareRequest,
 ):
     return compare_logic(
@@ -764,7 +824,7 @@ async def compare_versions_json(
 
 
 @app.post("/compare-reviews")
-async def compare_versions_form(
+def compare_versions_form(
     original_text: str = Form(...),
     corrected_text: str = Form(...),
 ):
@@ -1006,21 +1066,10 @@ def update_user_role(
     }
 
 
-@app.post("/export-review")
-def export_review():
-    return export_review_word()
-
-
-@app.post("/export-review-word")
-def export_review_word():
-    global last_article_review
-
-    if not last_article_review:
-        raise HTTPException(
-            status_code=400,
-            detail="Primero debes generar un dictamen",
-        )
-
+def build_word_file(
+    review_text: str,
+    file_path: str = "dictamen_academico.docx",
+):
     document = Document()
 
     document.add_heading(
@@ -1032,7 +1081,7 @@ def export_review_word():
         f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     )
 
-    for line in last_article_review.split("\n"):
+    for line in review_text.split("\n"):
         clean = line.strip()
 
         if not clean:
@@ -1053,41 +1102,17 @@ def export_review_word():
         else:
             document.add_paragraph(clean)
 
-    file_path = "dictamen_academico.docx"
-
     document.save(file_path)
 
-    return FileResponse(
-        path=file_path,
-        filename="dictamen_academico.docx",
-        media_type=(
-            "application/vnd.openxmlformats-officedocument."
-            "wordprocessingml.document"
-        ),
-    )
+    return file_path
 
 
-@app.get("/export-review-word")
-def export_review_word_get():
-    return export_review_word()
-
-
-@app.post("/export-review-pdf")
-def export_review_pdf():
-    global last_article_review
-
-    if not last_article_review:
-        raise HTTPException(
-            status_code=400,
-            detail="Primero debes generar un dictamen",
-        )
-
-    file_path = "dictamen_academico.pdf"
-
+def build_pdf_file(
+    review_text: str,
+    file_path: str = "dictamen_academico.pdf",
+):
     doc = SimpleDocTemplate(file_path)
-
     styles = getSampleStyleSheet()
-
     elements = []
 
     elements.append(
@@ -1130,38 +1155,36 @@ def export_review_pdf():
         Spacer(1, 12)
     )
 
-    for line in last_article_review.split("\n"):
+    for line in review_text.split("\n"):
         clean = line.strip()
 
         if not clean:
-            elements.append(
-                Spacer(1, 8)
-            )
+            elements.append(Spacer(1, 8))
             continue
+
+        safe_line = (
+            clean.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
 
         if clean.startswith("# "):
             elements.append(
                 Paragraph(
-                    clean.replace("# ", ""),
-                    styles["Heading2"],
+                    safe_line.replace("# ", ""),
+                    styles["Heading1"],
                 )
             )
 
         elif clean.startswith("## "):
             elements.append(
                 Paragraph(
-                    clean.replace("## ", ""),
-                    styles["Heading3"],
+                    safe_line.replace("## ", ""),
+                    styles["Heading2"],
                 )
             )
 
         else:
-            safe_line = (
-                clean.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-
             elements.append(
                 Paragraph(
                     safe_line,
@@ -1170,10 +1193,57 @@ def export_review_pdf():
             )
 
         elements.append(
-            Spacer(1, 8)
+            Spacer(1, 6)
         )
 
     doc.build(elements)
+
+    return file_path
+
+
+@app.post("/export-review")
+def export_review():
+    return export_review_word()
+
+
+@app.post("/export-review-word")
+def export_review_word():
+    global last_article_review
+
+    if not last_article_review:
+        raise HTTPException(
+            status_code=400,
+            detail="Primero debes generar un dictamen",
+        )
+
+    file_path = build_word_file(last_article_review)
+
+    return FileResponse(
+        path=file_path,
+        filename="dictamen_academico.docx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+    )
+
+
+@app.get("/export-review-word")
+def export_review_word_get():
+    return export_review_word()
+
+
+@app.post("/export-review-pdf")
+def export_review_pdf():
+    global last_article_review
+
+    if not last_article_review:
+        raise HTTPException(
+            status_code=400,
+            detail="Primero debes generar un dictamen",
+        )
+
+    file_path = build_pdf_file(last_article_review)
 
     return FileResponse(
         path=file_path,
@@ -1188,7 +1258,7 @@ def export_review_pdf_get():
 
 
 @app.get("/reviews/{review_id}/pdf")
-def download_review_pdf_by_id(
+def download_review_pdf(
     review_id: int,
     db: Session = Depends(get_db),
 ):
@@ -1204,129 +1274,45 @@ def download_review_pdf_by_id(
             detail="Dictamen no encontrado",
         )
 
-    file_path = f"dictamen_{review.id}.pdf"
-
-    doc = SimpleDocTemplate(file_path)
-    styles = getSampleStyleSheet()
-    elements = []
-
-    elements.append(
-        Paragraph(
-            "Universidad Veracruzana",
-            styles["Heading1"],
-        )
+    file_path = build_pdf_file(
+        review.review_content,
+        file_path=f"dictamen_{review.id}.pdf",
     )
-
-    elements.append(
-        Paragraph(
-            "Instituto de Investigaciones en Contaduría",
-            styles["Heading2"],
-        )
-    )
-
-    elements.append(
-        Spacer(1, 12)
-    )
-
-    elements.append(
-        Paragraph(
-            f"Dictamen académico #{review.id}",
-            styles["Heading1"],
-        )
-    )
-
-    elements.append(
-        Spacer(1, 12)
-    )
-
-    elements.append(
-        Paragraph(
-            f"Archivo: {review.filename}",
-            styles["BodyText"],
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            f"Tipo de revisión: {review.review_type}",
-            styles["BodyText"],
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            f"Resultado: {review.badge}",
-            styles["BodyText"],
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            f"Score: {review.score}/100",
-            styles["BodyText"],
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            f"Riesgo IA: {review.ai_probability}",
-            styles["BodyText"],
-        )
-    )
-
-    elements.append(
-        Spacer(1, 16)
-    )
-
-    review_content = review.review_content or "Sin contenido"
-
-    for line in review_content.split("\n"):
-        clean = line.strip()
-
-        if not clean:
-            elements.append(
-                Spacer(1, 8)
-            )
-            continue
-
-        if clean.startswith("# "):
-            elements.append(
-                Paragraph(
-                    clean.replace("# ", ""),
-                    styles["Heading2"],
-                )
-            )
-
-        elif clean.startswith("## "):
-            elements.append(
-                Paragraph(
-                    clean.replace("## ", ""),
-                    styles["Heading3"],
-                )
-            )
-
-        else:
-            safe_line = (
-                clean.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-
-            elements.append(
-                Paragraph(
-                    safe_line,
-                    styles["BodyText"],
-                )
-            )
-
-        elements.append(
-            Spacer(1, 8)
-        )
-
-    doc.build(elements)
 
     return FileResponse(
         path=file_path,
         filename=f"dictamen_{review.id}.pdf",
         media_type="application/pdf",
+    )
+
+
+@app.get("/reviews/{review_id}/word")
+def download_review_word(
+    review_id: int,
+    db: Session = Depends(get_db),
+):
+    review = (
+        db.query(Review)
+        .filter(Review.id == review_id)
+        .first()
+    )
+
+    if not review:
+        raise HTTPException(
+            status_code=404,
+            detail="Dictamen no encontrado",
+        )
+
+    file_path = build_word_file(
+        review.review_content,
+        file_path=f"dictamen_{review.id}.docx",
+    )
+
+    return FileResponse(
+        path=file_path,
+        filename=f"dictamen_{review.id}.docx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
     )
