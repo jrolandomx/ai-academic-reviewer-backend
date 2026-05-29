@@ -1111,6 +1111,212 @@ def build_pdf_file(
     review_text: str,
     file_path: str = "dictamen_academico.pdf",
 ):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Table, TableStyle
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    from reportlab.lib.styles import ParagraphStyle
+
+    doc = SimpleDocTemplate(
+        file_path,
+        pagesize=letter,
+        rightMargin=2 * cm,
+        leftMargin=2 * cm,
+        topMargin=2 * cm,
+        bottomMargin=2 * cm,
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "InstitutionalTitle",
+        parent=styles["Heading1"],
+        alignment=TA_CENTER,
+        fontName="Helvetica-Bold",
+        fontSize=16,
+        textColor=colors.HexColor("#0B1B33"),
+        spaceAfter=10,
+    )
+
+    subtitle_style = ParagraphStyle(
+        "InstitutionalSubtitle",
+        parent=styles["Normal"],
+        alignment=TA_CENTER,
+        fontName="Helvetica",
+        fontSize=10,
+        textColor=colors.HexColor("#4B5563"),
+        spaceAfter=16,
+    )
+
+    section_style = ParagraphStyle(
+        "SectionTitle",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        textColor=colors.HexColor("#0B1B33"),
+        spaceBefore=12,
+        spaceAfter=6,
+    )
+
+    body_style = ParagraphStyle(
+        "BodyJustified",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=9.5,
+        leading=13,
+        alignment=TA_JUSTIFY,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=6,
+    )
+
+    small_style = ParagraphStyle(
+        "Small",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#374151"),
+    )
+
+    elements = []
+
+    header_table = Table(
+        [
+            [
+                Paragraph("<b>Universidad Veracruzana</b>", title_style),
+            ],
+            [
+                Paragraph(
+                    "Instituto de Investigaciones en Contaduría",
+                    subtitle_style,
+                ),
+            ],
+            [
+                Paragraph(
+                    "Dictamen académico asistido por inteligencia artificial",
+                    subtitle_style,
+                ),
+            ],
+        ],
+        colWidths=[17 * cm],
+    )
+
+    header_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F3F6FA")),
+                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#D1D5DB")),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+
+    elements.append(header_table)
+    elements.append(Spacer(1, 14))
+
+    info_data = [
+        ["Fecha de generación", datetime.now().strftime("%d/%m/%Y %H:%M")],
+        ["Tipo de documento", "Dictamen académico"],
+        ["Sistema", "AI Academic Reviewer"],
+        ["Institución", "Universidad Veracruzana"],
+    ]
+
+    info_table = Table(
+        info_data,
+        colWidths=[5 * cm, 12 * cm],
+    )
+
+    info_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#0B1B33")),
+                ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
+                ("BACKGROUND", (1, 0), (1, -1), colors.HexColor("#FFFFFF")),
+                ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#111827")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+
+    elements.append(info_table)
+    elements.append(Spacer(1, 16))
+
+    elements.append(
+        Paragraph(
+            "Contenido del dictamen",
+            section_style,
+        )
+    )
+
+    clean_lines = review_text.split("\n")
+
+    for line in clean_lines:
+        clean = line.strip()
+
+        if not clean:
+            elements.append(Spacer(1, 5))
+            continue
+
+        safe_line = (
+            clean.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+        if clean.startswith("# "):
+            elements.append(
+                Paragraph(
+                    safe_line.replace("# ", ""),
+                    section_style,
+                )
+            )
+
+        elif clean.startswith("## "):
+            elements.append(
+                Paragraph(
+                    safe_line.replace("## ", ""),
+                    section_style,
+                )
+            )
+
+        elif clean.startswith("|"):
+            elements.append(
+                Paragraph(
+                    safe_line,
+                    small_style,
+                )
+            )
+
+        else:
+            elements.append(
+                Paragraph(
+                    safe_line,
+                    body_style,
+                )
+            )
+
+    elements.append(Spacer(1, 20))
+
+    footer = Paragraph(
+        "Nota: Este dictamen fue generado como apoyo académico mediante herramientas de inteligencia artificial. "
+        "La decisión editorial final debe ser validada por el comité académico correspondiente.",
+        small_style,
+    )
+
+    elements.append(footer)
+
+    doc.build(elements)
+
+    return file_path
     doc = SimpleDocTemplate(file_path)
     styles = getSampleStyleSheet()
     elements = []
