@@ -1522,3 +1522,28 @@ def download_review_word(
             "wordprocessingml.document"
         ),
     )
+@app.delete("/reviews/{review_id}")
+def delete_review(
+    review_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    review = (
+        db.query(Review)
+        .filter(Review.id == review_id)
+        .first()
+    )
+
+    if not review:
+        raise HTTPException(
+            status_code=404,
+            detail="Dictamen no encontrado",
+        )
+
+    db.delete(review)
+    db.commit()
+
+    return {
+        "message": "Dictamen eliminado correctamente",
+        "review_id": review_id,
+    }
