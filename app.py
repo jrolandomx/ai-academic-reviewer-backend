@@ -20,9 +20,7 @@ from dotenv import load_dotenv
 
 from openai import OpenAI
 
-from langchain_community.document_loaders import (
-    PyPDFLoader,
-)
+from langchain_community.document_loaders import PyPDFLoader
 
 from docx import Document
 
@@ -32,9 +30,7 @@ from reportlab.platypus import (
     Spacer,
 )
 
-from reportlab.lib.styles import (
-    getSampleStyleSheet,
-)
+from reportlab.lib.styles import getSampleStyleSheet
 
 from pydantic import BaseModel
 
@@ -71,7 +67,7 @@ load_dotenv()
 
 app = FastAPI(
     title="AI Academic Reviewer",
-    version="4.0",
+    version="5.0",
 )
 
 
@@ -209,8 +205,6 @@ def root():
         "message": "AI Academic Reviewer API funcionando",
         "status": "online",
     }
-
-
 @app.post("/register")
 def register(
     username: str = Form(...),
@@ -248,6 +242,9 @@ def register(
             "username": new_user.username,
             "role": new_user.role,
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         traceback.print_exc()
@@ -302,6 +299,9 @@ def login(
             "role": user.role,
         }
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         traceback.print_exc()
 
@@ -311,6 +311,8 @@ def login(
                 "error": str(e)
             },
         )
+
+
 @app.post("/upload-pdf")
 def upload_pdf(
     file: UploadFile = File(...),
@@ -415,6 +417,9 @@ PREGUNTA:
                 }
             ],
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         traceback.print_exc()
@@ -536,8 +541,6 @@ def get_article(
             for review in article.reviews
         ],
     }
-
-
 @app.post("/articles/{article_id}/assign")
 def assign_reviewer(
     article_id: int,
@@ -578,6 +581,8 @@ def assign_reviewer(
         "reviewer": reviewer.username,
         "status": article.status,
     }
+
+
 @app.post("/articles/{article_id}/status")
 def update_article_status(
     article_id: int,
@@ -769,6 +774,8 @@ Usa tabla Markdown:
 
         return {
             "review": review_text,
+            "review_content": review_text,
+            "dictamen": review_text,
             "score": str(score),
             "badge": badge,
             "ai_probability": ai_probability,
@@ -776,6 +783,9 @@ Usa tabla Markdown:
             "article_id": article.id,
             "article_status": article.status,
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         traceback.print_exc()
@@ -942,9 +952,37 @@ def get_review(
         "score": str(review.score),
         "review": review.review_content,
         "review_content": review.review_content,
+        "dictamen": review.review_content,
         "ai_probability": review.ai_probability,
         "created_at": review.created_at,
     }
+@app.delete("/reviews/{review_id}")
+def delete_review(
+    review_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    review = (
+        db.query(Review)
+        .filter(Review.id == review_id)
+        .first()
+    )
+
+    if not review:
+        raise HTTPException(
+            status_code=404,
+            detail="Dictamen no encontrado",
+        )
+
+    db.delete(review)
+    db.commit()
+
+    return {
+        "message": "Dictamen eliminado correctamente",
+        "review_id": review_id,
+    }
+
+
 @app.get("/dashboard")
 def dashboard(
     db: Session = Depends(get_db),
@@ -1317,94 +1355,6 @@ def build_pdf_file(
     doc.build(elements)
 
     return file_path
-    doc = SimpleDocTemplate(file_path)
-    styles = getSampleStyleSheet()
-    elements = []
-
-    elements.append(
-        Paragraph(
-            "Universidad Veracruzana",
-            styles["Heading1"],
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            "Instituto de Investigaciones en Contaduría",
-            styles["Heading2"],
-        )
-    )
-
-    elements.append(
-        Spacer(1, 12)
-    )
-
-    elements.append(
-        Paragraph(
-            "Dictamen académico asistido por IA",
-            styles["Heading1"],
-        )
-    )
-
-    elements.append(
-        Spacer(1, 12)
-    )
-
-    elements.append(
-        Paragraph(
-            f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
-            styles["BodyText"],
-        )
-    )
-
-    elements.append(
-        Spacer(1, 12)
-    )
-
-    for line in review_text.split("\n"):
-        clean = line.strip()
-
-        if not clean:
-            elements.append(Spacer(1, 8))
-            continue
-
-        safe_line = (
-            clean.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-
-        if clean.startswith("# "):
-            elements.append(
-                Paragraph(
-                    safe_line.replace("# ", ""),
-                    styles["Heading1"],
-                )
-            )
-
-        elif clean.startswith("## "):
-            elements.append(
-                Paragraph(
-                    safe_line.replace("## ", ""),
-                    styles["Heading2"],
-                )
-            )
-
-        else:
-            elements.append(
-                Paragraph(
-                    safe_line,
-                    styles["BodyText"],
-                )
-            )
-
-        elements.append(
-            Spacer(1, 6)
-        )
-
-    doc.build(elements)
-
-    return file_path
 
 
 @app.post("/export-review")
@@ -1522,28 +1472,3 @@ def download_review_word(
             "wordprocessingml.document"
         ),
     )
-@app.delete("/reviews/{review_id}")
-def delete_review(
-    review_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    review = (
-        db.query(Review)
-        .filter(Review.id == review_id)
-        .first()
-    )
-
-    if not review:
-        raise HTTPException(
-            status_code=404,
-            detail="Dictamen no encontrado",
-        )
-
-    db.delete(review)
-    db.commit()
-
-    return {
-        "message": "Dictamen eliminado correctamente",
-        "review_id": review_id,
-    }
