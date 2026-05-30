@@ -1563,3 +1563,28 @@ Riesgo IA bajo: {len([r for r in reviews if r.ai_probability == "Baja"])}
         filename="reporte_dashboard.pdf",
         media_type="application/pdf",
     )
+@app.post("/users/promote-admin")
+def promote_admin(
+    username: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(User.username == username)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
+
+    user.role = "admin"
+    db.commit()
+
+    return {
+        "message": "Usuario promovido a admin",
+        "username": user.username,
+        "role": user.role,
+    }
