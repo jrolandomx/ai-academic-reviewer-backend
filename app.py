@@ -1472,3 +1472,59 @@ def download_review_word(
             "wordprocessingml.document"
         ),
     )
+    @app.get("/reviews-export/excel")
+def export_reviews_excel(
+    db: Session = Depends(get_db),
+):
+    reviews = (
+        db.query(Review)
+        .order_by(Review.created_at.desc())
+        .all()
+    )
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Historial de dictámenes"
+
+    headers = [
+        "ID",
+        "Artículo ID",
+        "Revisor ID",
+        "Archivo",
+        "Tipo de revisión",
+        "Score",
+        "Dictamen",
+        "IA",
+        "Fecha",
+    ]
+
+    sheet.append(headers)
+
+    for review in reviews:
+        sheet.append(
+            [
+                review.id,
+                review.article_id,
+                review.reviewer_id,
+                review.filename,
+                review.review_type,
+                review.score,
+                review.badge,
+                review.ai_probability,
+                review.created_at.strftime("%d/%m/%Y %H:%M")
+                if review.created_at
+                else "",
+            ]
+        )
+
+    file_path = "historial_dictamenes.xlsx"
+    workbook.save(file_path)
+
+    return FileResponse(
+        path=file_path,
+        filename="historial_dictamenes.xlsx",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    )
