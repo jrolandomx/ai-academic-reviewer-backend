@@ -32,6 +32,8 @@ from reportlab.platypus import (
 
 from reportlab.lib.styles import getSampleStyleSheet
 
+from openpyxl import Workbook
+
 from pydantic import BaseModel
 
 from datetime import datetime
@@ -67,7 +69,7 @@ load_dotenv()
 
 app = FastAPI(
     title="AI Academic Reviewer",
-    version="5.0",
+    version="6.0",
 )
 
 
@@ -430,8 +432,6 @@ PREGUNTA:
                 "error": str(e)
             },
         )
-
-
 @app.post("/articles")
 def create_article(
     title: str = Form(...),
@@ -541,6 +541,8 @@ def get_article(
             for review in article.reviews
         ],
     }
+
+
 @app.post("/articles/{article_id}/assign")
 def assign_reviewer(
     article_id: int,
@@ -796,8 +798,6 @@ Usa tabla Markdown:
                 "error": str(e)
             },
         )
-
-
 @app.post("/chat")
 def chat(
     data: ChatRequest,
@@ -956,6 +956,8 @@ def get_review(
         "ai_probability": review.ai_probability,
         "created_at": review.created_at,
     }
+
+
 @app.delete("/reviews/{review_id}")
 def delete_review(
     review_id: int,
@@ -1102,8 +1104,6 @@ def update_user_role(
         "username": user.username,
         "role": user.role,
     }
-
-
 def build_word_file(
     review_text: str,
     file_path: str = "dictamen_academico.docx",
@@ -1166,6 +1166,7 @@ def build_pdf_file(
     )
 
     styles = getSampleStyleSheet()
+    elements = []
 
     title_style = ParagraphStyle(
         "InstitutionalTitle",
@@ -1216,8 +1217,6 @@ def build_pdf_file(
         leading=10,
         textColor=colors.HexColor("#374151"),
     )
-
-    elements = []
 
     header_table = Table(
         [
@@ -1295,9 +1294,7 @@ def build_pdf_file(
         )
     )
 
-    clean_lines = review_text.split("\n")
-
-    for line in clean_lines:
+    for line in review_text.split("\n"):
         clean = line.strip()
 
         if not clean:
@@ -1472,7 +1469,9 @@ def download_review_word(
             "wordprocessingml.document"
         ),
     )
-    @app.get("/reviews-export/excel")
+
+
+@app.get("/reviews-export/excel")
 def export_reviews_excel(
     db: Session = Depends(get_db),
 ):
@@ -1527,4 +1526,40 @@ def export_reviews_excel(
             "application/vnd.openxmlformats-officedocument."
             "spreadsheetml.sheet"
         ),
+    )
+
+
+@app.get("/dashboard-export/pdf")
+def export_dashboard_pdf(
+    db: Session = Depends(get_db),
+):
+    reviews = db.query(Review).all()
+    articles = db.query(Article).all()
+
+    content = f"""
+# Reporte general del sistema
+
+Total de artículos: {len(articles)}
+Total de dictámenes: {len(reviews)}
+Aceptados: {len([r for r in reviews if r.badge == "Aceptado sin cambios"])}
+Cambios menores: {len([r for r in reviews if r.badge == "Aceptado con cambios menores"])}
+Cambios mayores: {len([r for r in reviews if r.badge == "Requiere cambios mayores"])}
+Rechazados: {len([r for r in reviews if r.badge == "Rechazado"])}
+
+# Estadísticas de IA
+
+Riesgo IA alto: {len([r for r in reviews if r.ai_probability == "Alta"])}
+Riesgo IA medio: {len([r for r in reviews if r.ai_probability == "Media"])}
+Riesgo IA bajo: {len([r for r in reviews if r.ai_probability == "Baja"])}
+"""
+
+    file_path = build_pdf_file(
+        content,
+        file_path="reporte_dashboard.pdf",
+    )
+
+    return FileResponse(
+        path=file_path,
+        filename="reporte_dashboard.pdf",
+        media_type="application/pdf",
     )
